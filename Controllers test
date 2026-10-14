@@ -1,0 +1,157 @@
+import omni.ui as ui
+import omni.usd
+from pxr import Usd, Sdf
+
+
+JOINTS = {
+    "FL": "/root/Wheels/Left_wheel_front/Body_W_L_01/RevoluteJoint",
+    "FR": "/root/Wheels/Right_mecanum_front/body_W_R/RevoluteJoint",
+    "RL": "/root/Wheels/Right_wheel_back/Body_W_R_01/RevoluteJoint",
+    "RR": "/root/Wheels/Left_wheel_back/body_W_L/RevoluteJoint",
+}
+
+
+DEFAULT_SPEED = 100
+DEFAULT_MAX_FORCE = 800.0
+DEFAULT_DAMPING = 5.0
+
+
+def _set_drive_attr(prim, attr_name, value, value_type=Sdf.ValueTypeNames.Float):
+
+    attr = prim.GetAttribute(attr_name)
+    if not attr:
+
+        prim.CreateAttribute(attr_name, value_type)
+        attr = prim.GetAttribute(attr_name)
+    try:
+        attr.Set(value)
+    except Exception as e:
+        print(f"[MECANUM] Error setting {attr_name} on {prim.GetPath()}: {e}")
+
+def apply_drive_to_joint(prim_path, velocity, max_force=DEFAULT_MAX_FORCE, damping=DEFAULT_DAMPING):
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        print("[MECANUM] No stage available.")
+        return False
+
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim or not prim.IsValid():
+        print(f"[MECANUM] prim inválido: {prim_path}")
+        return False
+
+
+    tv_attr = "drive:angular:physics:targetVelocity"
+    mf_attr = "drive:angular:physics:maxForce"
+    dam_attr = "drive:angular:physics:damping"
+    type_attr = "drive:angular:physics:type"
+
+
+    _set_drive_attr(prim, tv_attr, float(velocity))
+    _set_drive_attr(prim, mf_attr, float(max_force))
+    _set_drive_attr(prim, dam_attr, float(damping))
+    _set_drive_attr(prim, type_attr, "angular", value_type=Sdf.ValueTypeNames.Token)
+
+    print(f"[MECANUM] Applied drive to {prim_path}: targetVelocity={velocity}, maxForce={max_force}, damping={damping}")
+    return True
+
+
+def _set_wheel_velocities_all(vFL, vFR, vRL, vRR, speed, max_force=DEFAULT_MAX_FORCE, damping=DEFAULT_DAMPING):
+    multipliers = {"FL": vFL, "FR": vFR, "RL": vRL, "RR": vRR}
+    for key, mult in multipliers.items():
+        prim_path = JOINTS.get(key)
+        if not prim_path:
+            print(f"[MECANUM] Missing joint path for {key}")
+            continue
+        target_vel = mult * float(speed)
+        apply_drive_to_joint(prim_path, target_vel, max_force=max_force, damping=damping)
+
+
+class MecanumUI:
+    def __init__(self):
+        self._window = ui.Window("Mecanum Robot Controller", width=380, height=420)
+        with self._window.frame:
+            with ui.VStack(spacing=8):
+                ui.Label("Mecanum Controller (buttons)", style={"font_size": 16})
+                with ui.HStack(height=28):
+                    ui.Label("Speed:", width=60)
+
+                    self._speed_model = ui.SimpleFloatModel(DEFAULT_SPEED)
+                    self._speed_field = ui.FloatField(model=self._speed_model)
+
+                ui.Spacer(height=6)
+
+                with ui.HStack():
+                    ui.Button("Forward", clicked_fn=lambda: self._on_move_cmd(1, 1, 1, 1))
+                    ui.Button("Backward", clicked_fn=lambda: self._on_move_cmd(-1, -1, -1, -1))
+                with ui.HStack():
+                    ui.Button("Strafe Left", clicked_fn=lambda: self._on_move_cmd(-1, 1, -1, 1))
+                    ui.Button("Strafe Right", clicked_fn=lambda: self._on_move_cmd(1, -1, 1, -1))
+                with ui.HStack():
+                    ui.Button("Rotate Left", clicked_fn=lambda: self._on_move_cmd(-1, 1, 1, -1))
+                    ui.Button("Rotate Right", clicked_fn=lambda: self._on_move_cmd(1, -1, -1, 1))
+                with ui.HStack():
+                    ui.Button("Diag up right", clicked_fn=lambda: self._on_move_cmd(1, 0, 1, 0))
+                    ui.Button("Diag up left", clicked_fn=lambda: self._on_move_cmd(0, 1, 0, 1))
+                with ui.HStack():
+                    ui.Button("Diag down right", clicked_fn=lambda: self._on_move_cmd(-1, 0, -1, 0))
+                    ui.Button("Diag down left", clicked_fn=lambda: self._on_move_cmd(0, -1, 0, -1))
+
+                ui.Spacer(height=8)
+                ui.Button("Stop All", clicked_fn=lambda: self._on_move_cmd(0, 0, 0, 0))
+
+                ui.Spacer(height=12)
+                ui.Label("Manual per-wheel (Set target velocity):", style={"font_size": 14})
+                for label, path in JOINTS.items():
+                    with ui.HStack(height=28):
+                        ui.Label(label, width=60)
+                        field = ui.FloatField(name=f"{label}_velocity_field", default=0.0)
+                        def make_cb(prim_path=path, field_model=field.model):
+                            def cb():
+                                try:
+                                    v = field_model.get_value_as_float()
+                                except Exception:
+
+                                    v = float(field_model.get_value())
+                                apply_drive_to_joint(prim_path, v)
+                            return cb
+                        ui.Button("Set", clicked_fn=make_cb())
+
+                ui.Spacer(height=8)
+                ui.Button("Validate JOINT paths (print)", clicked_fn=self._validate_joints)
+
+    def _get_speed(self):
+        try:
+            return self._speed_model.get_value_as_float()
+        except Exception:
+        
+            try:
+                return float(self._speed_model.get_value())
+            except Exception:
+                return DEFAULT_SPEED
+
+    def _on_move_cmd(self, fl, fr, rl, rr):
+        speed = self._get_speed()
+        print(f"[MECANUM] Applied velocities {{'FL':{fl}, 'FR':{fr}, 'RL':{rl}, 'RR':{rr}}} with speed {speed}")
+        _set_wheel_velocities_all(fl, fr, rl, rr, speed)
+
+    def _validate_joints(self):
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            print("[MECANUM] No stage loaded")
+            return
+        print("[MECANUM] Validating JOINTS:")
+        for k, p in JOINTS.items():
+            prim = stage.GetPrimAtPath(p)
+            ok = prim and prim.IsValid()
+            print(f"  {k}: {p} -> {'VALID' if ok else 'INVALID'}")
+
+
+try:
+
+    if "MECANUM_UI_INSTANCE" not in globals():
+        MECANUM_UI_INSTANCE = MecanumUI()
+        print("[MECANUM] UI created. Press Play and use the buttons.")
+    else:
+        print("[MECANUM] UI already exists.")
+except Exception as e:
+    print(f"[MECANUM] Error creating UI: {e}")
