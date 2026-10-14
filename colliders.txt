@@ -1,0 +1,210 @@
+import omni.usd
+from pxr import Sdf, UsdGeom, Usd, Gf
+
+stage = omni.usd.get_context().get_stage()
+if stage is None:
+    print("[ADD] ERROR: no stage disponible.")
+else:
+    print("[ADD] Stage OK")
+
+# --- AJUSTA ESTAS RUTAS si tu escena usa otros paths ---
+WHEEL_BODIES = [
+    "/root/Wheels/Left_wheel_front/Body_W_L_01",
+    "/root/Wheels/Right_mecanum_front/body_W_R",
+    "/root/Wheels/Right_wheel_back/Body_W_R_01",
+    "/root/Wheels/Left_wheel_back/body_W_L"
+]
+
+# Parámetros (ajusta radio/alto si es necesario)
+DEFAULT_RADIUS = 0.09
+DEFAULT_HEIGHT = 0.06
+WHEEL_MASS_IF_MISSING = 1.0
+DEFAULT_FRICTION = 1.0
+
+CREATED_TAG_NAME = "custom:created_by"
+CREATED_TAG_VALUE = "mec_coll_script_v1"
+
+def ensure_collision_enabled(prim):
+    a = prim.GetAttribute("physics:collisionEnabled")
+    if not a:
+        prim.CreateAttribute("physics:collisionEnabled", Sdf.ValueTypeNames.Bool).Set(True)
+    else:
+        try:
+            a.Set(True)
+        except Exception:
+            pass
+
+def ensure_mass_if_missing(prim, mass_val):
+    # intentamos nombres comunes; si no hay ninguno, creamos physics:mass
+    candidates = ["physics:mass","physxRigidBody:mass","physx:mass","mass"]
+    for an in candidates:
+        a = prim.GetAttribute(an)
+        if a and a.HasAuthoredValue():
+            # ya tiene masa; no la sobrescribimos
+            return False
+    # crear physics:mass
+    try:
+        prim.CreateAttribute("physics:mass", Sdf.ValueTypeNames.Double).Set(float(mass_val))
+        print(f"[ADD] Created physics:mass={mass_val} on {prim.GetPath()}")
+        return True
+    except Exception as e:
+        print(f"[ADD] Could not create mass on {prim.GetPath()}: {e}")
+        return False
+
+def set_friction(prim, friction_val=DEFAULT_FRICTION):
+    names = ("physics:friction","physx:friction","physics:dynamicFriction")
+    for an in names:
+        a = prim.GetAttribute(an)
+        if a:
+            try:
+                a.Set(float(friction_val))
+                return True
+            except Exception:
+                continue
+    # crear uno canónico
+    try:
+        prim.CreateAttribute("physics:friction", Sdf.ValueTypeNames.Double).Set(float(friction_val))
+        return True
+    except Exception:
+        return False
+
+def create_cylinder_collider(parent_prim, name="wheel_collider", radius=DEFAULT_RADIUS, height=DEFAULT_HEIGHT):
+    child_path = parent_prim.GetPath().AppendChild(name)
+    existing = stage.GetPrimAtPath(child_path)
+    if existing and existing.IsValid():
+        print(f"[ADD] Collider ya existe: {child_path} (lo marcaré y aseguraré collision)")
+        ensure_collision_enabled(existing)
+        existing.CreateAttribute(CREATED_TAG_NAME, Sdf.ValueTypeNames.String).Set(CREATED_TAG_VALUE)
+        return existing
+
+    try:
+        cyl = UsdGeom.Cylinder.Define(stage, child_path)
+        cyl.CreateRadiusAttr(radius)
+        cyl.CreateHeightAttr(height)
+        # marcarlo para revert safe
+        cyl.GetPrim().CreateAttribute(CREATED_TAG_NAME, Sdf.ValueTypeNames.String).Set(CREATED_TAG_VALUE)
+        # habilitar collision en el collider
+        cyl.GetPrim().CreateAttribute("physics:collisionEnabled", Sdf.ValueTypeNames.Bool).Set(True)
+        print(f"[ADD] Created collider {child_path} (r={radius}, h={height})")
+        return cyl.GetPrim()
+    except Exception as e:
+        print(f"[ADD] Error creando collider en {parent_prim.GetPath()}: {e}")
+        return None
+
+# Ejecutar: crear colliders y asegurar masa/fricción
+print("=== START ADD COLLIDERS ===")
+for wb in WHEEL_BODIES:
+    prim = stage.GetPrimAtPath(Sdf.Path(wb))
+    if not prim or not prim.IsValid():
+        print("[ADD] Wheel body NO encontrado:", wb)
+        continue
+    print("[ADD] Procesando:", wb)
+
+    # asegurar collision en el body (no obligatorio pero útil)
+    ensure_collision_enabled(prim)
+    # crear collider child si no existe
+    c = create_cylinder_collider(prim, "wheel_collider", DEFAULT_RADIUS, DEFAULT_HEIGHT)
+    # asegurar masa sólo si faltaba
+    created_mass = ensure_mass_if_missing(prim, WHEEL_MASS_IF_MISSING)
+    if created_mass:
+        print(f"[ADD] Masa añadida a {wb}")
+    # asegurar friction en body y child
+    set_friction(prim, DEFAULT_FRICTION)
+    if c and c.IsValid():
+        set_friction(c, DEFAULT_FRICTION)
+
+print("=== FINISHED ADD COLLIDERS ===")
+print("Ahora guarda la escena y prueba en Play. Si algo no te gusta, ejecuta el script REVERT que te di.")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+reverse
+
+
+import omni.usd
+from pxr import Sdf, Usd
+
+stage = omni.usd.get_context().get_stage()
+if stage is None:
+    print("[REVERT] ERROR: no stage.")
+else:
+    print("[REVERT] Stage OK")
+
+# mismas rutas que usamos antes (ajusta si cambiaste)
+WHEEL_BODIES = [
+    "/root/Wheels/Left_wheel_front/Body_W_L_01",
+    "/root/Wheels/Right_mecanum_front/body_W_R",
+    "/root/Wheels/Right_wheel_back/Body_W_R_01",
+    "/root/Wheels/Left_wheel_back/body_W_L"
+]
+
+CREATED_TAG_NAME = "custom:created_by"
+CREATED_TAG_VALUE = "mec_coll_script_v1"
+WHEEL_MASS_IF_MISSING = 1.0
+MASS_ATTR_CANDIDATES = ["physics:mass","physxRigidBody:mass","physx:mass","mass"]
+
+def deactivate_child_if_tagged(parent_prim, child_name="wheel_collider"):
+    child_path = parent_prim.GetPath().AppendChild(child_name)
+    child = stage.GetPrimAtPath(child_path)
+    if child and child.IsValid():
+        tag_attr = child.GetAttribute(CREATED_TAG_NAME)
+        if tag_attr and tag_attr.HasAuthoredValue() and tag_attr.Get() == CREATED_TAG_VALUE:
+            try:
+                child.SetActive(False)
+                print(f"[REVERT] Desactivado collider: {child_path}")
+            except Exception as e:
+                print(f"[REVERT] Error desactivando {child_path}: {e}")
+        else:
+            print(f"[REVERT] Collider {child_path} existe pero no fue creado por el script (no tocado).")
+    else:
+        print(f"[REVERT] No existe collider child en {parent_prim.GetPath()}")
+
+def remove_mass_if_matches(prim):
+    for an in MASS_ATTR_CANDIDATES:
+        a = prim.GetAttribute(an)
+        if a and a.HasAuthoredValue():
+            try:
+                v = a.Get()
+            except Exception:
+                v = None
+            try:
+                if v is not None and float(v) == float(WHEEL_MASS_IF_MISSING):
+                    # remove property
+                    prim.RemoveProperty(an)
+                    print(f"[REVERT] Removed mass attr {an} ({v}) from {prim.GetPath()}")
+                else:
+                    print(f"[REVERT] Conservando {an}={v} en {prim.GetPath()}")
+            except Exception as e:
+                print(f"[REVERT] Error checando/removiendo {an} en {prim.GetPath()}: {e}")
+
+print("=== START REVERT ===")
+for wb in WHEEL_BODIES:
+    prim = stage.GetPrimAtPath(Sdf.Path(wb))
+    if not prim or not prim.IsValid():
+        print("[REVERT] Wheel body NO encontrado:", wb)
+        continue
+    deactivate_child_if_tagged(prim, "wheel_collider")
+    # unset collisionEnabled on body if it was set (we set it in ADD script, but we won't delete attr; we will set to False)
+    a = prim.GetAttribute("physics:collisionEnabled")
+    if a and a.HasAuthoredValue():
+        try:
+            a.Set(False)
+            print(f"[REVERT] Set physics:collisionEnabled=False on {prim.GetPath()}")
+        except Exception:
+            pass
+    remove_mass_if_matches(prim)
+
+print("=== FINISH REVERT ===")
+print("Revisa la escena. Si quieres borrar los prims desactivados permanentemente dime y preparo script seguro para eliminarlos.")

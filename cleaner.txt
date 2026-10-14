@@ -1,0 +1,43 @@
+
+import omni.usd
+from pxr import Sdf
+
+stage = omni.usd.get_context().get_stage()
+if stage is None:
+    print(" No hay stage cargado.")
+else:
+    print(" Stage detectado, iniciando limpieza...")
+
+# Lista de rutas de tus ruedas — ajusta si tus nombres son distintos
+WHEEL_BODIES = [
+    "/root/Wheels/Left_wheel_front/Body_W_L_01",
+    "/root/Wheels/Right_mecanum_front/body_W_R",
+    "/root/Wheels/Right_wheel_back/Body_W_R_01",
+    "/root/Wheels/Left_wheel_back/body_W_L"
+]
+
+def remove_child_colliders(parent_path):
+    parent = stage.GetPrimAtPath(Sdf.Path(parent_path))
+    if not parent or not parent.IsValid():
+        print(f"[CLEANUP] ⚠ No se encontró: {parent_path}")
+        return
+
+    children = list(parent.GetChildren())
+    count_deleted = 0
+    for child in children:
+        name = child.GetName()
+        if "collider" in name.lower() or "Cylinder" in str(child.GetTypeName()):
+            try:
+                stage.RemovePrim(child.GetPath())
+                print(f"[CLEANUP] 🗑 Eliminado collider: {child.GetPath()}")
+                count_deleted += 1
+            except Exception as e:
+                print(f"[CLEANUP] ⚠ No se pudo eliminar {child.GetPath()}: {e}")
+    if count_deleted == 0:
+        print(f"[CLEANUP] ℹ No se encontraron colliders en {parent_path}")
+
+print("LIMPIEZA INICIADA ")
+for wb in WHEEL_BODIES:
+    remove_child_colliders(wb)
+
+print("LIMPIEZA FINALIZADA 
